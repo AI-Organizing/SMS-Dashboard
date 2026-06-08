@@ -370,19 +370,29 @@ DIMENSIONS:
 4. LETTER_FOLLOWTHROUGH: Did THEM report actually sending the letter or email?
    - Evidence like "I sent the email", "I mailed the letter", "letter is in the mail".
    - NO if no letter commitment, or committed but never reported sending.
-5. MEETING_COMMITMENT: Did THEM commit to attending an in-person meeting or event AFTER being asked?
-   - Only count if YOU requested attendance and THEM agreed.
+5. MEETING_COMMITMENT: Did THEM commit to attending a SPECIFIC in-person meeting or event AFTER being asked?
+   - Only count if YOU asked them to attend a specific event and THEM clearly agreed to attend it.
+   - Does NOT count: agreeing to look at a list of events, being directed to a website or
+     calendar, expressing general interest, or saying they'll "check it out." Browsing or
+     being pointed to options is not a commitment to attend.
 6. MEETING_FOLLOWTHROUGH: Did THEM report actually attending the meeting or event?
    - Evidence like "I went to the meeting", "I was there", "just got back from the event".
    - NO if no meeting commitment, or committed but never reported attending.
+7. HOST_COMMITMENT: Did THEM commit to hosting a patients table AFTER being asked?
+   - Only count if YOU requested they host and THEM agreed.
+8. HOST_FOLLOWTHROUGH: Did THEM report actually registering a patients table?
+   - Evidence like "I created the event", "Yes I registered", or — in response to a direct ask like "Did you register your event?" — "yes".
+   - NO if no host commitment, or committed but never reported registering.
 
-RESPOND in this exact format (6 lines):
+RESPOND in this exact format (8 lines):
 CALL_COMMITMENT: YES|NO <confidence> - <explanation>
 CALL_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
 LETTER_COMMITMENT: YES|NO <confidence> - <explanation>
 LETTER_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
 MEETING_COMMITMENT: YES|NO <confidence> - <explanation>
 MEETING_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
+HOST_COMMITMENT: YES|NO <confidence> - <explanation>
+HOST_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
 
 Example:
 CALL_COMMITMENT: YES 90 - THEM agreed to call their representative after YOU asked.
@@ -390,7 +400,9 @@ CALL_FOLLOWTHROUGH: YES 85 - THEM said "I just called and left a voicemail."
 LETTER_COMMITMENT: NO 95 - No letter or email was requested in the conversation.
 LETTER_FOLLOWTHROUGH: NO 99 - No letter commitment was made.
 MEETING_COMMITMENT: YES 88 - THEM agreed to attend the rally after being asked.
-MEETING_FOLLOWTHROUGH: NO 90 - THEM committed to attend but never reported going."""
+MEETING_FOLLOWTHROUGH: NO 90 - THEM committed to attend but never reported going.
+HOST_COMMITMENT: YES 88 - THEM agreed to host a patients table after being asked.
+HOST_FOLLOWTHROUGH: NO 90 - THEM committed to host but never reported registering the event."""
 
 # Commitment analysis functions
 def analyze_commitments_with_anthropic(conversations: dict, api_key: str, custom_prompt: str = None, progress_callback=None) -> dict:
@@ -514,11 +526,27 @@ def analyze_commitments_with_openai(conversations: dict, api_key: str, custom_pr
     return results
 
 # Variant evaluation functions
+#
+# Action types are defined ONCE here. The parser dimensions, aggregation counters, and
+# variant-table columns all derive from this list, so adding/removing/renaming an action is
+# a one-line edit. NOTE: the human-readable definitions for each action live in
+# DEFAULT_VARIANT_EVAL_PROMPT above and must be edited there too — the guard below fails loudly
+# if the default prompt doesn't emit a dimension this list expects.
+ACTION_TYPES = ['call', 'letter', 'meeting', 'host']
+
 VARIANT_EVAL_DIMENSIONS = [
-    'CALL_COMMITMENT', 'CALL_FOLLOWTHROUGH',
-    'LETTER_COMMITMENT', 'LETTER_FOLLOWTHROUGH',
-    'MEETING_COMMITMENT', 'MEETING_FOLLOWTHROUGH',
+    f'{action.upper()}_{suffix}'
+    for action in ACTION_TYPES
+    for suffix in ('COMMITMENT', 'FOLLOWTHROUGH')
 ]
+
+# Drift guard: the default prompt must reference every dimension the parser looks for,
+# or AI results for the missing action would silently come back as all-NO.
+_missing_dimensions = [d for d in VARIANT_EVAL_DIMENSIONS if d not in DEFAULT_VARIANT_EVAL_PROMPT]
+assert not _missing_dimensions, (
+    f"DEFAULT_VARIANT_EVAL_PROMPT is missing dimensions {_missing_dimensions}; "
+    "add them to the prompt's DIMENSIONS, response-format, and example blocks."
+)
 
 def parse_variant_eval_response(response_text: str) -> dict:
     """Parse the 8-dimensional variant evaluation response."""
@@ -691,7 +719,7 @@ def get_person_variant(messages_df):
     outgoing = messages_df[mask].sort_values('created_at')
     return outgoing.drop_duplicates('person_id', keep='first').set_index('person_id')['message_variant_name'].to_dict()
 
-ACTION_TYPES = ['call', 'letter', 'meeting']
+# ACTION_TYPES is defined once near VARIANT_EVAL_DIMENSIONS (single source of truth).
 
 def aggregate_variant_metrics(eval_results: dict, person_variant_map: dict, responder_ids: set, optout_ids: set, person_reply_counts: dict = None) -> pd.DataFrame:
     """Aggregate per-conversation LLM evaluation results by variant into a summary DataFrame."""
@@ -765,6 +793,44 @@ def aggregate_variant_metrics(eval_results: dict, person_variant_map: dict, resp
         rows.append(row)
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+# Fixed (non-action) columns shown in the variant summary table, in display order.
+VARIANT_FIXED_COLS = [
+    'Variant', 'Total Recipients', 'Total Responders', 'Reply Rate', 'Opt-out Rate',
+    'Active Responders', 'Median Active Responses',
+]
+
+def build_variant_display(variant_summary_df):
+    """Build (display_cols, column_config) for the variant summary table.
+
+    Columns derive from ACTION_TYPES so the table can't drift from the action set.
+    Action columns whose commitment rate is zero across every variant are hidden, so a
+    campaign only shows the action types it actually used.
+    """
+    display_cols = [c for c in VARIANT_FIXED_COLS if c in variant_summary_df.columns]
+    column_config = {
+        'Variant': st.column_config.TextColumn('Variant', help='Message variant name from outgoing messages'),
+        'Total Recipients': st.column_config.NumberColumn('Total Recipients', help='People who received this variant (with valid phone numbers)'),
+        'Total Responders': st.column_config.NumberColumn('Total Responders', help='People who sent at least one reply'),
+        'Reply Rate': st.column_config.TextColumn('Reply Rate', help='Substantive reply rate — denominator: Total Recipients'),
+        'Opt-out Rate': st.column_config.TextColumn('Opt-out Rate', help='Opt-out rate — denominator: Total Recipients'),
+        'Active Responders': st.column_config.TextColumn('Active Responders', help='Responders who did not opt out — denominator: Total Recipients'),
+        'Median Active Responses': st.column_config.NumberColumn('Median Active Responses', help='Active response messages per active conversation'),
+    }
+    for action in ACTION_TYPES:
+        label = action.title()
+        commit_col = f'{label} Commit'
+        follow_col = f'{label} Follow-through'
+        if commit_col not in variant_summary_df.columns:
+            continue
+        # Hide an action type that no variant has any commitments for.
+        rate_col = f'_{action}_commitment_rate'
+        if rate_col in variant_summary_df.columns and float(variant_summary_df[rate_col].fillna(0).sum()) == 0.0:
+            continue
+        display_cols.extend([commit_col, follow_col])
+        column_config[commit_col] = st.column_config.TextColumn(commit_col, help=f'Committed to this action ({label}) — denominator: Active Responders')
+        column_config[follow_col] = st.column_config.TextColumn(follow_col, help=f'Reported following through — denominator: {label} Commit count')
+    return display_cols, column_config
 
 # Sidebar: Date Filter (available before data upload)
 st.sidebar.markdown("---")
@@ -2105,30 +2171,12 @@ if _has_fresh_upload or _cached_session is not None:
                             avg_reply = variant_summary_df['_reply_rate'].mean()
                             st.metric("Avg Reply Rate", f"{avg_reply:.1f}%")
 
-                        # Main comparison table
-                        display_cols = ['Variant', 'Total Recipients', 'Total Responders', 'Reply Rate', 'Opt-out Rate',
-                                        'Active Responders', 'Median Active Responses',
-                                        'Call Commit', 'Call Follow-through',
-                                        'Letter Commit', 'Letter Follow-through',
-                                        'Meeting Commit', 'Meeting Follow-through']
+                        # Main comparison table — columns derive from ACTION_TYPES; unused actions hidden
+                        display_cols, variant_column_config = build_variant_display(variant_summary_df)
                         st.dataframe(
                             variant_summary_df[display_cols],
                             width='stretch',
-                            column_config={
-                                'Variant': st.column_config.TextColumn('Variant', help='Message variant name from outgoing messages'),
-                                'Total Recipients': st.column_config.NumberColumn('Total Recipients', help='People who received this variant (with valid phone numbers)'),
-                                'Total Responders': st.column_config.NumberColumn('Total Responders', help='People who sent at least one reply'),
-                                'Reply Rate': st.column_config.TextColumn('Reply Rate', help='Substantive reply rate — denominator: Total Recipients'),
-                                'Opt-out Rate': st.column_config.TextColumn('Opt-out Rate', help='Opt-out rate — denominator: Total Recipients'),
-                                'Active Responders': st.column_config.TextColumn('Active Responders', help='Responders who did not opt out — denominator: Total Recipients'),
-                                'Median Active Responses': st.column_config.NumberColumn('Median Active Responses', help='Active response messages per active conversation'),
-                                'Call Commit': st.column_config.TextColumn('Call Commit', help='Committed to making a phone call — denominator: Active Responders'),
-                                'Call Follow-through': st.column_config.TextColumn('Call Follow-through', help='Reported making the call — denominator: Call Commit count'),
-                                'Letter Commit': st.column_config.TextColumn('Letter Commit', help='Committed to writing a letter or email — denominator: Active Responders'),
-                                'Letter Follow-through': st.column_config.TextColumn('Letter Follow-through', help='Reported sending the letter/email — denominator: Letter Commit count'),
-                                'Meeting Commit': st.column_config.TextColumn('Meeting Commit', help='Committed to attending an in-person meeting — denominator: Active Responders'),
-                                'Meeting Follow-through': st.column_config.TextColumn('Meeting Follow-through', help='Reported attending the meeting — denominator: Meeting Commit count'),
-                            },
+                            column_config=variant_column_config,
                             hide_index=True,
                         )
 
@@ -2243,29 +2291,11 @@ else:
                 avg_reply = variant_summary_df['_reply_rate'].mean()
                 st.metric("Avg Reply Rate", f"{avg_reply:.1f}%")
 
-            display_cols = ['Variant', 'Total Recipients', 'Total Responders', 'Reply Rate', 'Opt-out Rate',
-                            'Active Responders', 'Median Active Responses',
-                            'Call Commit', 'Call Follow-through',
-                            'Letter Commit', 'Letter Follow-through',
-                            'Meeting Commit', 'Meeting Follow-through']
+            display_cols, variant_column_config = build_variant_display(variant_summary_df)
             st.dataframe(
                 variant_summary_df[display_cols],
                 width='stretch',
-                column_config={
-                    'Variant': st.column_config.TextColumn('Variant', help='Message variant name from outgoing messages'),
-                    'Total Recipients': st.column_config.NumberColumn('Total Recipients', help='People who received this variant (with valid phone numbers)'),
-                    'Total Responders': st.column_config.NumberColumn('Total Responders', help='People who sent at least one reply'),
-                    'Reply Rate': st.column_config.TextColumn('Reply Rate', help='Substantive reply rate — denominator: Total Recipients'),
-                    'Opt-out Rate': st.column_config.TextColumn('Opt-out Rate', help='Opt-out rate — denominator: Total Recipients'),
-                    'Active Responders': st.column_config.TextColumn('Active Responders', help='Responders who did not opt out — denominator: Total Recipients'),
-                    'Median Active Responses': st.column_config.NumberColumn('Median Active Responses', help='Active response messages per active conversation'),
-                    'Call Commit': st.column_config.TextColumn('Call Commit', help='Committed to making a phone call — denominator: Active Responders'),
-                    'Call Follow-through': st.column_config.TextColumn('Call Follow-through', help='Reported making the call — denominator: Call Commit count'),
-                    'Letter Commit': st.column_config.TextColumn('Letter Commit', help='Committed to writing a letter or email — denominator: Active Responders'),
-                    'Letter Follow-through': st.column_config.TextColumn('Letter Follow-through', help='Reported sending the letter/email — denominator: Letter Commit count'),
-                    'Meeting Commit': st.column_config.TextColumn('Meeting Commit', help='Committed to attending an in-person meeting — denominator: Active Responders'),
-                    'Meeting Follow-through': st.column_config.TextColumn('Meeting Follow-through', help='Reported attending the meeting — denominator: Meeting Commit count'),
-                },
+                column_config=variant_column_config,
                 hide_index=True,
             )
 

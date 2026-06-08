@@ -14,6 +14,7 @@ from app import (
     aggregate_variant_metrics,
     DEFAULT_VARIANT_EVAL_PROMPT,
     VARIANT_EVAL_DIMENSIONS,
+    ACTION_TYPES,
 )
 
 
@@ -132,7 +133,22 @@ class TestVariantEvalResponseParsing:
         """REPLY and OPTOUT should not be in VARIANT_EVAL_DIMENSIONS."""
         assert 'REPLY' not in VARIANT_EVAL_DIMENSIONS
         assert 'OPTOUT' not in VARIANT_EVAL_DIMENSIONS
-        assert len(VARIANT_EVAL_DIMENSIONS) == 6
+
+    def test_dimensions_derive_from_action_types(self):
+        """Dimensions are exactly a COMMITMENT + FOLLOWTHROUGH pair per action type."""
+        assert len(VARIANT_EVAL_DIMENSIONS) == 2 * len(ACTION_TYPES)
+        expected = [
+            f'{action.upper()}_{suffix}'
+            for action in ACTION_TYPES
+            for suffix in ('COMMITMENT', 'FOLLOWTHROUGH')
+        ]
+        assert VARIANT_EVAL_DIMENSIONS == expected
+
+    def test_host_dimension_present(self):
+        """The host action added for TPU is wired through to the parser dimensions."""
+        assert 'host' in ACTION_TYPES
+        assert 'HOST_COMMITMENT' in VARIANT_EVAL_DIMENSIONS
+        assert 'HOST_FOLLOWTHROUGH' in VARIANT_EVAL_DIMENSIONS
 
 
 class TestGetPersonVariant:
