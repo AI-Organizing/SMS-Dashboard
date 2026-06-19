@@ -421,7 +421,7 @@ def analyze_commitments_with_anthropic(conversations: dict, api_key: str, custom
         prompt = prompt_template.format(conversation=conversation)
         try:
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=100,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -615,7 +615,7 @@ def analyze_variant_eval_with_anthropic(conversations: dict, api_key: str, custo
         prompt = prompt_template.format(conversation=conversation)
         def _call():
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-6",
                 max_tokens=450,
                 messages=[{"role": "user", "content": prompt}]
             )
@@ -800,12 +800,30 @@ VARIANT_FIXED_COLS = [
     'Active Responders', 'Median Active Responses',
 ]
 
+def active_action_types(variant_summary_df):
+    """Action types the campaign actually used — those with at least one commitment
+    or follow-through across all variants. Drives column visibility so a campaign only
+    shows the actions that exist in its conversations (e.g. a host-recruiting campaign
+    shows Host only). Both the summary table and the per-conversation detail tables use
+    this, so the two can never drift apart.
+    """
+    actions = []
+    for action in ACTION_TYPES:
+        commit_col = f'_{action}_commitment_rate'
+        follow_col = f'_{action}_followthrough_rate'
+        commit_sum = float(variant_summary_df[commit_col].fillna(0).sum()) if commit_col in variant_summary_df.columns else 0.0
+        follow_sum = float(variant_summary_df[follow_col].fillna(0).sum()) if follow_col in variant_summary_df.columns else 0.0
+        if commit_sum > 0 or follow_sum > 0:
+            actions.append(action)
+    return actions
+
 def build_variant_display(variant_summary_df):
     """Build (display_cols, column_config) for the variant summary table.
 
     Columns derive from ACTION_TYPES so the table can't drift from the action set.
-    Action columns whose commitment rate is zero across every variant are hidden, so a
-    campaign only shows the action types it actually used.
+    Action types not used by the campaign (no commitments or follow-through on any
+    variant) are hidden via active_action_types(), so a campaign only shows the action
+    types it actually used.
     """
     display_cols = [c for c in VARIANT_FIXED_COLS if c in variant_summary_df.columns]
     column_config = {
@@ -817,15 +835,11 @@ def build_variant_display(variant_summary_df):
         'Active Responders': st.column_config.TextColumn('Active Responders', help='Responders who did not opt out — denominator: Total Recipients'),
         'Median Active Responses': st.column_config.NumberColumn('Median Active Responses', help='Active response messages per active conversation'),
     }
-    for action in ACTION_TYPES:
+    for action in active_action_types(variant_summary_df):
         label = action.title()
         commit_col = f'{label} Commit'
         follow_col = f'{label} Follow-through'
         if commit_col not in variant_summary_df.columns:
-            continue
-        # Hide an action type that no variant has any commitments for.
-        rate_col = f'_{action}_commitment_rate'
-        if rate_col in variant_summary_df.columns and float(variant_summary_df[rate_col].fillna(0).sum()) == 0.0:
             continue
         display_cols.extend([commit_col, follow_col])
         column_config[commit_col] = st.column_config.TextColumn(commit_col, help=f'Committed to this action ({label}) — denominator: Active Responders')
@@ -892,7 +906,7 @@ if ANTHROPIC_AVAILABLE or OPENAI_AVAILABLE:
         # Build list of available providers from centralized keys
         available_providers = []
         if centralized_anthropic:
-            available_providers.append("Anthropic (Sonnet 4)")
+            available_providers.append("Anthropic (Sonnet 4.6)")
         if centralized_openai:
             available_providers.append("OpenAI (GPT-4o-mini)")
 
@@ -920,7 +934,7 @@ if ANTHROPIC_AVAILABLE or OPENAI_AVAILABLE:
                 anthropic_key_override = st.text_input(
                     "Anthropic API Key",
                     type="password",
-                    help="From console.anthropic.com (uses Sonnet 4)"
+                    help="From console.anthropic.com (uses Sonnet 4.6)"
                 )
 
             if OPENAI_AVAILABLE:
@@ -2231,10 +2245,11 @@ if _has_fresh_upload or _cached_session is not None:
 
                             with st.expander(f"View {variant_name} - {len(variant_active)} active responders"):
                                 detail_rows = []
+                                _detail_actions = active_action_types(variant_summary_df)
                                 for pid, r in variant_active.items():
                                     person_name = get_person_name(pid, people_df) or f"Person {pid}"
                                     row = {'Person': person_name}
-                                    for action in ACTION_TYPES:
+                                    for action in _detail_actions:
                                         label = action.title()
                                         commit_key = f'{action}_commitment'
                                         follow_key = f'{action}_followthrough'
@@ -2309,9 +2324,10 @@ else:
                 }
                 with st.expander(f"View {vname} - {len(v_active)} active responders"):
                     detail_rows = []
+                    _detail_actions = active_action_types(variant_summary_df)
                     for pid, r in v_active.items():
                         row = {'Person': _standalone_names.get(str(pid), f"Person {pid}")}
-                        for action in ACTION_TYPES:
+                        for action in _detail_actions:
                             label = action.title()
                             commit_data = r.get(f'{action}_commitment', {})
                             follow_data = r.get(f'{action}_followthrough', {})
