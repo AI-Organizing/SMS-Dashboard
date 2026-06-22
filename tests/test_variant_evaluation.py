@@ -135,13 +135,13 @@ class TestVariantEvalResponseParsing:
         assert 'OPTOUT' not in VARIANT_EVAL_DIMENSIONS
 
     def test_dimensions_derive_from_action_types(self):
-        """Dimensions are exactly a COMMITMENT + FOLLOWTHROUGH pair per action type."""
-        assert len(VARIANT_EVAL_DIMENSIONS) == 2 * len(ACTION_TYPES)
+        """Dimensions are a COMMITMENT + FOLLOWTHROUGH pair per action type, plus HOST_ASK."""
+        assert len(VARIANT_EVAL_DIMENSIONS) == 2 * len(ACTION_TYPES) + 1
         expected = [
             f'{action.upper()}_{suffix}'
             for action in ACTION_TYPES
             for suffix in ('COMMITMENT', 'FOLLOWTHROUGH')
-        ]
+        ] + ['HOST_ASK']
         assert VARIANT_EVAL_DIMENSIONS == expected
 
     def test_host_dimension_present(self):
@@ -149,6 +149,7 @@ class TestVariantEvalResponseParsing:
         assert 'host' in ACTION_TYPES
         assert 'HOST_COMMITMENT' in VARIANT_EVAL_DIMENSIONS
         assert 'HOST_FOLLOWTHROUGH' in VARIANT_EVAL_DIMENSIONS
+        assert 'HOST_ASK' in VARIANT_EVAL_DIMENSIONS
 
 
 class TestGetPersonVariant:

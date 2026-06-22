@@ -378,19 +378,23 @@ DIMENSIONS:
 6. MEETING_FOLLOWTHROUGH: Did THEM report actually attending the meeting or event?
    - Evidence like "I went to the meeting", "I was there", "just got back from the event".
    - NO if no meeting commitment, or committed but never reported attending.
-7. HOST_COMMITMENT: Did THEM commit to hosting a patients table AFTER being asked?
+7. HOST_ASK: Did YOU (the bot) actually ask THEM to host — i.e., invite this specific person to host a patients table themselves?
+   - Counts any invitation to host, however phrased, including indirect/contextual asks like "would you be up for it?" after describing getting a few people together.
+   - Does NOT count merely describing or explaining what a patients table is, or talking about hosting in the abstract — there must be an actual ask for THEM to host.
+8. HOST_COMMITMENT: Did THEM commit to hosting a patients table AFTER being asked?
    - Only count if YOU requested they host and THEM agreed.
-8. HOST_FOLLOWTHROUGH: Did THEM report actually registering a patients table?
+9. HOST_FOLLOWTHROUGH: Did THEM report actually registering a patients table?
    - Evidence like "I created the event", "Yes I registered", or — in response to a direct ask like "Did you register your event?" — "yes".
    - NO if no host commitment, or committed but never reported registering.
 
-RESPOND in this exact format (8 lines):
+RESPOND in this exact format (9 lines):
 CALL_COMMITMENT: YES|NO <confidence> - <explanation>
 CALL_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
 LETTER_COMMITMENT: YES|NO <confidence> - <explanation>
 LETTER_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
 MEETING_COMMITMENT: YES|NO <confidence> - <explanation>
 MEETING_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
+HOST_ASK: YES|NO <confidence> - <explanation>
 HOST_COMMITMENT: YES|NO <confidence> - <explanation>
 HOST_FOLLOWTHROUGH: YES|NO <confidence> - <explanation>
 
@@ -401,6 +405,7 @@ LETTER_COMMITMENT: NO 95 - No letter or email was requested in the conversation.
 LETTER_FOLLOWTHROUGH: NO 99 - No letter commitment was made.
 MEETING_COMMITMENT: YES 88 - THEM agreed to attend the rally after being asked.
 MEETING_FOLLOWTHROUGH: NO 90 - THEM committed to attend but never reported going.
+HOST_ASK: YES 92 - YOU asked "would you be up for hosting a few people?" after explaining the table.
 HOST_COMMITMENT: YES 88 - THEM agreed to host a patients table after being asked.
 HOST_FOLLOWTHROUGH: NO 90 - THEM committed to host but never reported registering the event."""
 
@@ -542,7 +547,7 @@ VARIANT_EVAL_DIMENSIONS = [
     f'{action.upper()}_{suffix}'
     for action in ACTION_TYPES
     for suffix in ('COMMITMENT', 'FOLLOWTHROUGH')
-]
+] + ['HOST_ASK']  # host-only: was the person actually asked to host (the funnel denominator)
 
 # Drift guard: the default prompt must reference every dimension the parser looks for,
 # or AI results for the missing action would silently come back as all-NO.
@@ -736,6 +741,7 @@ def aggregate_variant_metrics(eval_results: dict, person_variant_map: dict, resp
         for action in ACTION_TYPES:
             d[f'{action}_commitment'] = 0
             d[f'{action}_followthrough'] = 0
+        d['host_asked'] = 0
         return d
 
     variant_data = {}
@@ -762,6 +768,8 @@ def aggregate_variant_metrics(eval_results: dict, person_variant_map: dict, resp
                     variant_data[variant_name][f'{action}_commitment'] += 1
                 if r.get(f'{action}_followthrough', {}).get('answer') == 'YES' and r.get(f'{action}_followthrough', {}).get('confidence', 0) >= OTHER_THRESHOLD:
                     variant_data[variant_name][f'{action}_followthrough'] += 1
+            if r.get('host_ask', {}).get('answer') == 'YES' and r.get('host_ask', {}).get('confidence', 0) >= OTHER_THRESHOLD:
+                variant_data[variant_name]['host_asked'] += 1
 
     def _fmt(count, denom):
         return f"{(count / denom * 100):.1f}% ({count})" if denom > 0 else "0.0% (0)"
@@ -794,6 +802,8 @@ def aggregate_variant_metrics(eval_results: dict, person_variant_map: dict, resp
             row[f'{label} Follow-through'] = _fmt(d[f'{action}_followthrough'], commit_count)
             row[f'_{action}_commitment_rate'] = _rate(commit_count, active)
             row[f'_{action}_followthrough_rate'] = _rate(d[f'{action}_followthrough'], commit_count)
+        row['Host Asked'] = _fmt(d['host_asked'], active)
+        row['_host_ask_rate'] = _rate(d['host_asked'], active)
         rows.append(row)
 
     return pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -848,6 +858,9 @@ def build_variant_display(variant_summary_df):
         follow_col = f'{label} Follow-through'
         if commit_col not in variant_summary_df.columns:
             continue
+        if action == 'host' and 'Host Asked' in variant_summary_df.columns:
+            display_cols.append('Host Asked')
+            column_config['Host Asked'] = st.column_config.TextColumn('Host Asked', help='Bot actually asked them to host (funnel denominator) — denominator: Active Responders')
         display_cols.extend([commit_col, follow_col])
         column_config[commit_col] = st.column_config.TextColumn(commit_col, help=f'Committed to this action ({label}) — denominator: Active Responders')
         column_config[follow_col] = st.column_config.TextColumn(follow_col, help=f'Reported following through — denominator: {label} Commit count')
@@ -2262,6 +2275,11 @@ if _has_fresh_upload or _cached_session is not None:
                                         follow_key = f'{action}_followthrough'
                                         commit_data = r.get(commit_key, {})
                                         follow_data = r.get(follow_key, {})
+                                        if action == 'host':
+                                            ask_data = r.get('host_ask', {})
+                                            row['Host Asked'] = f"{ask_data.get('answer', 'N/A')} ({ask_data.get('confidence', 0)}%)"
+                                            if ask_data.get('answer') == 'YES' and ask_data.get('summary'):
+                                                row['Host Asked'] += f" - {ask_data['summary']}"
                                         row[f'{label} Commit'] = f"{commit_data.get('answer', 'N/A')} ({commit_data.get('confidence', 0)}%)"
                                         row[f'{label} Follow-through'] = f"{follow_data.get('answer', 'N/A')} ({follow_data.get('confidence', 0)}%)"
                                         if commit_data.get('answer') == 'YES' and commit_data.get('summary'):
@@ -2338,6 +2356,11 @@ else:
                             label = action.title()
                             commit_data = r.get(f'{action}_commitment', {})
                             follow_data = r.get(f'{action}_followthrough', {})
+                            if action == 'host':
+                                ask_data = r.get('host_ask', {})
+                                row['Host Asked'] = f"{ask_data.get('answer', 'N/A')} ({ask_data.get('confidence', 0)}%)"
+                                if ask_data.get('answer') == 'YES' and ask_data.get('summary'):
+                                    row['Host Asked'] += f" - {ask_data['summary']}"
                             row[f'{label} Commit'] = f"{commit_data.get('answer', 'N/A')} ({commit_data.get('confidence', 0)}%)"
                             row[f'{label} Follow-through'] = f"{follow_data.get('answer', 'N/A')} ({follow_data.get('confidence', 0)}%)"
                             if commit_data.get('answer') == 'YES' and commit_data.get('summary'):
