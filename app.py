@@ -533,6 +533,10 @@ def analyze_commitments_with_openai(conversations: dict, api_key: str, custom_pr
 # DEFAULT_VARIANT_EVAL_PROMPT above and must be edited there too — the guard below fails loudly
 # if the default prompt doesn't emit a dimension this list expects.
 ACTION_TYPES = ['call', 'letter', 'meeting', 'host']
+# Action types whose columns ALWAYS display, even at zero commitments (the campaign's
+# primary ask). Keeps the host column stable for daily reporting instead of flickering
+# on/off with a single borderline host-yes. Other actions appear only when they have activity.
+ALWAYS_SHOW_ACTIONS = ['host']
 
 VARIANT_EVAL_DIMENSIONS = [
     f'{action.upper()}_{suffix}'
@@ -809,6 +813,9 @@ def active_action_types(variant_summary_df):
     """
     actions = []
     for action in ACTION_TYPES:
+        if action in ALWAYS_SHOW_ACTIONS:
+            actions.append(action)
+            continue
         commit_col = f'_{action}_commitment_rate'
         follow_col = f'_{action}_followthrough_rate'
         commit_sum = float(variant_summary_df[commit_col].fillna(0).sum()) if commit_col in variant_summary_df.columns else 0.0
