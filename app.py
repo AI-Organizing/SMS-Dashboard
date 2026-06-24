@@ -1478,6 +1478,10 @@ if _has_fresh_upload or _cached_session is not None:
                 with st.expander(f"View {opt_outs:,} Opt-out Details"):
                     if opt_out_categories:
                         opt_out_df = pd.DataFrame(opt_out_details)
+                        # If no opt-out has a computable time-to-opt-out, hours_elapsed comes through
+                        # as all-None (object dtype) and .round() below crashes. Coerce to numeric so
+                        # the column is always float (NaN) and the section degrades gracefully.
+                        opt_out_df['hours_elapsed'] = pd.to_numeric(opt_out_df['hours_elapsed'], errors='coerce')
                         category_counts = pd.Series(opt_out_categories).value_counts()
 
                         col1, col2 = st.columns(2)
